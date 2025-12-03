@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Arweave JSON Template → Baby Address Table (V0.3 - CORS friendly)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root {
+    --bbn-bg: #030712;
+    --bbn-surface: #060b1a;
+    --bbn-surface-soft: #0b1024;
+    --bbn-border: #1f2937;
+    --bbn-accent: #cf6533;
+    --bbn-accent-soft: #e3a689;
+    --bbn-text: #f9fafb;
+    --bbn-text-muted: #9ca3af;
+    --bbn-positive: #22c55e;
+    --bbn-negative: #f97316;
+  }
+
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial;
+    margin: 0;
+    padding: 24px;
+    background: radial-gradient(circle at top, #0b1120 0, #020617 55%, #000 100%);
+    color: var(--bbn-text);
+  }
+
+  .container { max-width: 1180px; margin: 0 auto; padding: 1px; border-radius: 18px; }
+  .container > * { padding: 20px 22px 22px; border-radius: 18px; background: radial-gradient(circle at top left, #0f172a 0, #020617 55%); }
+  h1 { text-align:center; margin:0 0 16px; font-size:1.35rem; color:var(--bbn-text); }
+
+  .controls { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+  input[type="text"] { flex:1; min-width:260px; padding:9px 11px; border-radius:999px; border:1px solid rgba(148,163,184,0.6); background: #020617; color:var(--bbn-text); }
+  button { padding:9px 16px; border-radius:999px; border:none; background:radial-gradient(circle at top left, var(--bbn-accent) 0, #f97316 40%); color:#0b0b0b; font-weight:600; cursor:pointer; }
+
+  .msg { margin:6px 0 14px; color:var(--bbn-text-muted); white-space:pre-wrap; font-size:0.9rem; }
+
+  .table-shell { margin-top:8px; border-radius:16px; overflow:hidden; background:#020617; border:1px solid rgba(15,23,42,1); position:relative; }
+  .table-header-strip { display:flex; justify-content:space-between; padding:10px 14px; border-bottom:1px solid rgba(30,64,175,0.7); }
+  .title { font-size:0.95rem; font-weight:600; color:#e5e7eb; }
+  .meta { font-size:0.8rem; color:var(--bbn-text-muted); }
+
+  table { width:100%; border-collapse:collapse; font-size:0.88rem; }
+  th, td { padding:8px 10px; text-align:left; border-bottom:1px solid rgba(31,41,55,0.85); }
+  th { position:sticky; top:0; z-index:2; background: linear-gradient(180deg, rgba(15,23,42,0.98), rgba(15,23,42,0.95)); font-size:0.78rem; color:#9ca3af; text-transform:uppercase; }
+  tbody tr:nth-child(odd) td { background: rgba(15,23,42,0.9); }
+  tbody tr:nth-child(even) td { background: rgba(207,101,51,0.16); }
+  tbody tr:hover td { background: radial-gradient(circle at left, rgba(207,101,51,0.45), rgba(15,23,42,0.95)); }
+
+  td:first-child { font-weight:500; color:#e5e7eb; white-space:nowrap; }
+  .amount.positive { color:var(--bbn-positive); }
+  .amount.negative { color:var(--bbn-negative); }
+  .input-col { width:140px; }
+  .input-col input[type="number"] { width:100%; padding:6px 8px; border-radius:8px; border:1px solid rgba(148,163,184,0.3); background:rgba(2,6,23,0.6); color:var(--bbn-text); }
+
+  .footer-actions { display:flex; justify-content:flex-end; padding:12px 14px; gap:10px; align-items:center; }
+  .hint { color:var(--bbn-text-muted); font-size:0.85rem; }
+</style>
+</head>
+<body>
+  <div class="container">
+    <h1 id="pageTitle">Arweave JSON Table Viewer (V0.3)</h1>
+
+    <div id="msg" class="msg"></div>
+    
+    <div id="tableWrapper"></div>
+    
+    <div class="controls">
+      <input id="value" type="text"
+             value="https://rt77saoki3w4zz4uo2ddkod5m6ljfudbvwjwhrpbrgp5qpszxyzq.arweave.net/jP_5AcpG7cznlHaGNTh9Z5aS0GGtk2PF4Ymf2D5ZvjM">
+      <button id="loadBtn">Load & Build Table</button>
+    </div>
+    
+  </div>
+
+<script type="module">
+/*
+  CORS-friendly V0.3:
+  - Removed the top-level import of @cosmjs/stargate (which caused CORS/404 when opened as a local file).
+  - The code now attempts to dynamically import the CosmJS module only when the user clicks "Connect Wallet & Send".
+    It tries a list of CDN candidate URLs in sequence and reports helpful instructions if none succeed.
+  - If dynamic import fails (CORS/404), the user can still "Copy Prepared Msgs (JSON)" to sign/broadcast with other tooling.
+  - Recommended: serve this file from a simple HTTP server (python -m http.server) — many browsers give "null" origin when opened from file://,
+    which causes stricter CORS and can break CDN module loads.
+*/
+
+const input = document.getElementById('value');
+const btn = document.getElementById('loadBtn');
+const msgEl = document.getElementById('msg');
+const titleEl = document.getElementById('pageTitle');
+const tableWrapper = document.getElementById('tableWrapper');
+
+function clearTable(){ tableWrapper.innerHTML = ''; }
+function isProbablyAddress(s) { return typeof s === 'string' && s.length > 10; }
+function formatToken(amountSmallest, divisor = 1e6) {
+  const sign = amountSmallest < 0 ? '-' : '';
+  const v = Math.abs(Number(amountSmallest)) / divisor;
+  const rounded = Math.round(v);
+  return sign + rounded.toLocaleString('en-US');
+}
+
+/* Mock amounts - same as previous version */
+function seededAmountsFor(addr, needed) {
+  const out = [];
+  let seed = 0;
+  for (let i = 0; i < addr.length; i++) seed = ((seed << 5) - seed) + addr.charCodeAt(i);
+  seed = Math.abs(seed) || 12345;
+  for (let i = 0; i < needed; i++) {
+    seed = (seed * 9301 + 49297) % 233280;
+    const v = 10000 + Math.floor((seed / 233280) * 2990000);
+    out.push(v);
+  }
+  return out;
+}
+async function fetchCosmosTxs(address, needed) { await new Promise(r=>setTimeout(r,80)); return seededAmountsFor(address, needed); }
+
+async function loadAndBuild() {
+  const url = input.value.trim();
+  if (!url) { msgEl.textContent = 'Please enter an Arweave JSON URL (or data URL).'; return; }
+
+  btn.disabled = true;
+  msgEl.textContent = 'Fetching Arweave JSON template...';
+
+  try {
+    let res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+    const template = await res.json();
+
+    const title = template.title || 'Untitled';
+    const columns = template.columns || [];
+    const rows = template.rows || [];
+    const numRows = rows.length;
+    if (numRows === 0) throw new Error('No rows defined in template.');
+
+    // addresses
+    let addrSub = template.SeverancePayAddress || null;
+    let addrAdd = template.address || null;
+    if ((!addrSub || !addrAdd)) {
+      const keys = Object.keys(template);
+      for (let i = keys.length - 1; i >= 0 && (!addrAdd || !addrSub); i--) {
+        const k = keys[i]; const v = template[k];
+        if (!addrAdd && isProbablyAddress(v) && k.toLowerCase().includes('address')) {
+          if (k.toLowerCase().includes('severance')) addrSub = v;
+          else addrAdd = addrAdd || v;
+        } else if (isProbablyAddress(v)) {
+          if (!addrAdd) addrAdd = v; else if (!addrSub) addrSub = v;
+        }
+      }
+    }
+    if (!isProbablyAddress(addrAdd) || !isProbablyAddress(addrSub)) {
+      const vals = Object.values(template).filter(v=>typeof v==='string');
+      if (vals.length >= 2) { addrSub = addrSub || vals[vals.length - 2]; addrAdd = addrAdd || vals[vals.length - 1]; }
+    }
+    if (!isProbablyAddress(addrAdd) || !isProbablyAddress(addrSub)) {
+      throw new Error('Could not find two addresses in the JSON. Expect template.address and template.SeverancePayAddress (or two address-like values).');
+    }
+
+    const denomLabel = template.denom || 'BABY';
+    const divisor = template.divisor || 1e6;
+    const chainId = template.chainId || null;
+    const rpcEndpoint = template.rpc || template.rpcEndpoint || null;
+
+    titleEl.textContent = `${title} (add: ${addrAdd.slice(0,10)}... sub: ${addrSub.slice(0,10)}...)`;
+    msgEl.textContent = `Fetching incoming tx amounts (mock) for ${addrAdd} (add) and ${addrSub} (sub)...`;
+
+    const needed = numRows;
+    const receivedAdd = await fetchCosmosTxs(addrAdd, needed);
+    const receivedSub = await fetchCosmosTxs(addrSub, needed);
+
+    const numValueCols = Math.max(1, columns.length - 1);
+    const dataMatrix = [];
+    for (let r = 0; r < numRows; r++) {
+      const add = Number(receivedAdd[r] || 0);
+      const sub = Number(receivedSub[r] || 0);
+      const net = add - sub;
+      const rowArr = [];
+      if (numValueCols >= 3) {
+        rowArr.push(add, sub, net);
+        if (numValueCols >= 4) rowArr.push(null);
+      } else if (numValueCols === 2) {
+        rowArr.push(add, sub);
+      } else {
+        rowArr.push(net);
+        for (let i = 1; i < numValueCols; i++) rowArr.push(null);
+      }
+      dataMatrix.push(rowArr.map(v => (v === null ? null : Math.round(v))));
+    }
+
+    // Build DOM
+    clearTable();
+    const shell = document.createElement('div'); shell.className = 'table-shell';
+    const headerStrip = document.createElement('div'); headerStrip.className = 'table-header-strip';
+    const titleSpan = document.createElement('div'); titleSpan.className = 'title'; titleSpan.textContent = title || 'Table';
+    const metaSpan = document.createElement('div'); metaSpan.className = 'meta'; metaSpan.textContent = `Denom: ${denomLabel} • Values rounded to whole units`;
+    headerStrip.appendChild(titleSpan); headerStrip.appendChild(metaSpan); shell.appendChild(headerStrip);
+
+    const table = document.createElement('table'); const thead = document.createElement('thead'); const tbody = document.createElement('tbody');
+    const headerRow = document.createElement('tr'); const labelTh = document.createElement('th'); labelTh.textContent = columns[0] || ''; headerRow.appendChild(labelTh);
+    for (let i = 1; i <= numValueCols; i++) { const th = document.createElement('th'); th.textContent = columns[i] || `Col ${i}`; headerRow.appendChild(th); }
+    thead.appendChild(headerRow);
+
+    const inputEls = [];
+    rows.forEach((rowName, rIdx) => {
+      const tr = document.createElement('tr');
+      const first = document.createElement('td'); first.textContent = rowName; tr.appendChild(first);
+      const rowData = dataMatrix[rIdx] || [];
+      for (let c = 0; c < numValueCols; c++) {
+        const td = document.createElement('td');
+        if (c < rowData.length && rowData[c] !== null && rowData[c] !== undefined) {
+          const span = document.createElement('span'); span.classList.add('amount');
+          if (c === 0 && rowData.length > 1) span.classList.add('positive');
+          if (c === 1 && rowData.length > 1) span.classList.add('negative');
+          if (c === 2) span.classList.add('net');
+          span.textContent = formatToken(rowData[c], divisor); td.appendChild(span);
+        } else {
+          if (c === 3) {
+            td.className = 'input-col';
+            const inp = document.createElement('input'); inp.type = 'number'; inp.min = '0'; inp.placeholder = '0'; inp.value = ''; inp.dataset.rowIndex = String(rIdx);
+            td.appendChild(inp); inputEls.push(inp);
+          } else {
+            td.textContent = '';
+          }
+        }
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    });
+
+    table.appendChild(thead); table.appendChild(tbody); shell.appendChild(table);
+
+    // footer
+    const footer = document.createElement('div'); footer.className = 'footer-actions';
+    const hint = document.createElement('div'); hint.className = 'hint';
+    hint.textContent = numValueCols >= 4 ? 'Enter amounts in the 4th column (whole BABY units). Click Connect Wallet & Send to send those amounts (in order) to SeverancePayAddress.' : 'Template has <4 value columns; no editable send column present.';
+    footer.appendChild(hint);
+    const spacer = document.createElement('div'); spacer.style.flex = '1'; footer.appendChild(spacer);
+
+    const walletBtn = document.createElement('button'); walletBtn.textContent = 'Connect Wallet & Send (4th column)'; walletBtn.disabled = !(numValueCols >= 4); footer.appendChild(walletBtn);
+    const copyBtn = document.createElement('button'); copyBtn.textContent = 'Copy Prepared Msgs (JSON)'; copyBtn.style.background = 'linear-gradient(90deg,#64748b,#94a3b8)'; copyBtn.disabled = !(numValueCols >= 4); footer.appendChild(copyBtn);
+
+    shell.appendChild(footer); tableWrapper.appendChild(shell);
+
+    msgEl.textContent = `Table built. Ready to accept 4th column inputs and send to SeverancePayAddress: ${addrSub}.`;
+
+    function gatherFourthColumnValues() {
+      return inputEls.map(inp => {
+        const v = inp.value.trim();
+        if (v === '') return 0;
+        const n = Number(v);
+        if (Number.isNaN(n) || !isFinite(n) || n < 0) return NaN;
+        return Math.round(n);
+      });
+    }
+
+    function prepareMsgs(fromAddress, toAddress, valuesWholeUnits) {
+      const msgs = [];
+      for (let i = 0; i < valuesWholeUnits.length; i++) {
+        const whole = valuesWholeUnits[i];
+        if (!whole || whole === 0) continue;
+        const amountSmallest = BigInt(whole) * BigInt(Math.round(divisor));
+        msgs.push({
+          typeUrl: "/cosmos.bank.v1beta1.MsgSend",
+          value: {
+            fromAddress,
+            toAddress,
+            amount: [
+              {
+                denom: (template.denom && template.denom.toLowerCase().startsWith('u')) ? template.denom : (template.rpcDenom || template.denom || 'ubabylon'),
+                amount: amountSmallest.toString()
+              }
+            ]
+          }
+        });
+      }
+      return msgs;
+    }
+
+    copyBtn.addEventListener('click', async () => {
+      const vals = gatherFourthColumnValues();
+      if (vals.some(v => Number.isNaN(v))) { msgEl.textContent = 'Invalid number in 4th column inputs.'; return; }
+      let fromAddr = 'YOUR_ADDRESS_HERE';
+      try {
+        if (window.keplr && chainId) {
+          await window.keplr.enable(chainId);
+          const offlineSigner = window.getOfflineSigner && window.getOfflineSigner(chainId);
+          const accounts = await offlineSigner.getAccounts();
+          if (accounts && accounts.length) fromAddr = accounts[0].address;
+        }
+      } catch(e){ /* ignore */ }
+      const msgs = prepareMsgs(fromAddr, addrSub, vals);
+      const out = { chainId: chainId || 'CHAIN_ID_UNKNOWN', rpc: rpcEndpoint || 'RPC_UNKNOWN', msgs };
+      await navigator.clipboard.writeText(JSON.stringify(out, null, 2));
+      msgEl.textContent = 'Prepared messages JSON copied to clipboard.';
+    });
+
+    // Dynamic import candidates for CosmJS
+    const cosmJsCandidates = [
+      'https://unpkg.com/@cosmjs/stargate@0.38.0?module',
+      'https://cdn.jsdelivr.net/npm/@cosmjs/stargate@0.38.0/+esm',
+      'https://cdn.skypack.dev/@cosmjs/stargate@0.38.0'
+    ];
+
+    async function tryImportCosmjs() {
+      let lastErr = null;
+      for (const url of cosmJsCandidates) {
+        try {
+          msgEl.textContent = `Attempting to load CosmJS from ${url} ...`;
+          const mod = await import(url);
+          // Some CDNs expose default, some named exports
+          const SigningStargateClient = mod.SigningStargateClient || (mod.default && mod.default.SigningStargateClient);
+          if (!SigningStargateClient) {
+            // If module loaded but shape unexpected, return full module so caller can inspect
+            return mod;
+          }
+          return mod;
+        } catch (e) {
+          lastErr = e;
+          // try next
+        }
+      }
+      throw lastErr || new Error('Failed to import CosmJS from all candidates');
+    }
+
+    walletBtn.addEventListener('click', async () => {
+      const vals = gatherFourthColumnValues();
+      if (vals.length === 0) { msgEl.textContent = 'No 4th column inputs found.'; return; }
+      if (vals.some(v => Number.isNaN(v))) { msgEl.textContent = 'Invalid number in 4th column inputs.'; return; }
+      if (vals.every(v => v === 0)) { msgEl.textContent = 'All 4th column values are zero — nothing to send.'; return; }
+
+      if (!window.keplr) {
+        msgEl.textContent = 'Keplr not found. Install Keplr or use "Copy Prepared Msgs (JSON)".';
+        return;
+      }
+      if (!chainId || !rpcEndpoint) {
+        msgEl.textContent = 'Template missing chainId or rpc endpoint. Add template.chainId and template.rpc (rpcEndpoint) to enable on-chain sending.';
+        return;
+      }
+
+      walletBtn.disabled = true;
+      copyBtn.disabled = true;
+      msgEl.textContent = 'Loading CosmJS (may be blocked if opening file://). If this fails, see instructions below.';
+
+      let cosmMod;
+      try {
+        cosmMod = await tryImportCosmjs();
+      } catch (err) {
+        // Helpful error message and suggestions
+        msgEl.innerText = [
+          'Failed to load CosmJS from CDN (CORS/404). Common fixes:',
+          '1) Serve this file over HTTP (do not open via file://). Example: python -m http.server and open http://localhost:8000/',
+          '2) Download a browser-friendly build of @cosmjs/stargate and include it locally via a <script> tag.',
+          '3) If you are behind a restrictive environment, try another CDN URL or run from a proper webserver.',
+          '',
+          `Error detail: ${err && err.message ? err.message : String(err)}`
+        ].join('\n');
+        walletBtn.disabled = false;
+        copyBtn.disabled = false;
+        return;
+      }
+
+      try {
+        await window.keplr.enable(chainId);
+        const offlineSigner = window.getOfflineSigner && window.getOfflineSigner(chainId);
+        const accounts = await offlineSigner.getAccounts();
+        if (!accounts || accounts.length === 0) throw new Error('No accounts available from Keplr.');
+        const fromAddress = accounts[0].address;
+
+        // Determine SigningStargateClient from loaded module
+        const SigningStargateClient = cosmMod.SigningStargateClient || (cosmMod.default && cosmMod.default.SigningStargateClient);
+        if (!SigningStargateClient) {
+          throw new Error('Loaded CosmJS module did not expose SigningStargateClient; the CDN build may be incompatible. Try another CDN or bundle the library locally.');
+        }
+
+        const msgs = prepareMsgs(fromAddress, addrSub, vals);
+        if (msgs.length === 0) {
+          msgEl.textContent = 'All entered values are zero — nothing to send.';
+          walletBtn.disabled = false;
+          copyBtn.disabled = false;
+          return;
+        }
+
+        msgEl.textContent = `Prepared ${msgs.length} MsgSend(s). Connecting to RPC ${rpcEndpoint}...`;
+
+        const client = await SigningStargateClient.connectWithSigner(rpcEndpoint, offlineSigner);
+
+        // naive fee - demo only
+        const totalCoins = msgs.flatMap(m => m.value.amount).reduce((acc, a) => {
+          const found = acc.find(x => x.denom === a.denom);
+          if (found) found.amount = (BigInt(found.amount) + BigInt(a.amount)).toString();
+          else acc.push({ denom: a.denom, amount: a.amount.toString()});
+          return acc;
+        }, []);
+        const fee = {
+          amount: totalCoins.map(c => ({ denom: c.denom, amount: (BigInt(Math.max(1, Math.round(0.0001 * Number(divisor))))).toString() })),
+          gas: String(200000 + msgs.length * 40000)
+        };
+
+        msgEl.textContent = 'Signing and broadcasting transaction...';
+        const result = await client.signAndBroadcast(fromAddress, msgs, fee, `Severance column send (${title})`);
+        if (result.code && result.code !== 0) {
+          msgEl.textContent = `Broadcast failed: code=${result.code} rawLog=${result.rawLog || result.raw_log || ''}`;
+        } else {
+          msgEl.textContent = `Broadcast success. TxHash: ${result.transactionHash || result.txhash || ''}`;
+        }
+      } catch (err) {
+        msgEl.textContent = `Error during send: ${err && err.message ? err.message : String(err)}. If this is a CORS import error, follow instructions shown earlier.`;
+      } finally {
+        walletBtn.disabled = false;
+        copyBtn.disabled = false;
+      }
+    });
+
+  } catch (err) {
+    msgEl.textContent = `Error: ${err && err.message ? err.message : String(err)}`;
+    clearTable();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+btn.addEventListener('click', loadAndBuild);
+
+</script>
+</body>
+</html>
